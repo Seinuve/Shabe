@@ -7,6 +7,7 @@ import time
 
 ## third-party modules
 import openai
+import backoff
 
 from openai.error import APIConnectionError, APIError, AuthenticationError, ServiceUnavailableError, RateLimitError, Timeout
 
@@ -37,6 +38,8 @@ class Shabe:
 
         self.url = url
 
+        self.messages = []
+
         if(os.name == 'nt'):  ## Windows
             self.config_dir = os.path.join(os.environ['USERPROFILE'],"ShabeConfig")
         else:  ## Linux
@@ -45,7 +48,7 @@ class Shabe:
 
 ##-------------------start-of-get_pass_twenty_messages()---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
-    def get_past_five_messages(self):
+    def get_past_twenty_messages(self):
         messages = requests.get(self.url, headers=self.auth)
         result = json.loads(messages.text)
 
@@ -56,7 +59,7 @@ class Shabe:
             messages_to_return_content.append(key['content'])
             messages_to_return_user.append(key['author']['username'])
 
-            if i >= 4:  # Check if 5 messages have been collected
+            if i >= 19:  # Check if 5 messages have been collected
                 break
 
         return messages_to_return_content, messages_to_return_user
@@ -140,14 +143,85 @@ class Shabe:
 
                 raise e
                     
+##-------------------start-of-build_messages()---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+    def build_messages(self, prompt) -> None:
+
+        '''
+
+        builds messages dict for ai\n
+        
+        Parameters:\n
+        self (object - Kijiku) : the Kijiku object.\n
+
+        Returns:\n
+        None\n
+
+        '''
+
+
+        system_message = "You are Koujou, a discord user that it trying to talk as much as possible.\nYou are doing this through 'Userphone' a discord bot that lets you communicate across servers.\nYou will be provided with the past twenty messages that have been sent in the discord channel you are in, as well as the username of the person who sent them.Please note that Yggdrasil is the bot commanding userphone, so do not talk to it.\nType the '--userphone' command to start a new call or type the '--hangup' command to end your current call. Please type '--userphone' if you understand."
+
+        system_msg = {}
+        system_msg["role"] = "system"
+        system_msg["content"] = system_message
+
+        self.messages.append(system_msg)
+
+        model_msg = {}
+        model_msg["role"] = "user"
+        model_msg["content"] = prompt
+
+        self.messages.append(model_msg)
+
+##-------------------start-of-translate_message()---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+
+    ## backoff wrapper for retrying on errors
+    @backoff.on_exception(backoff.expo, (ServiceUnavailableError, RateLimitError, Timeout, APIError, APIConnectionError))
+    def get_gpt_response(self) -> str:
+
+        '''
+
+        translates system and user message\n
+
+        Parameters:\n
+        self (object - Kijiku) : the Kijiku object.\n
+        system_message (dict) : the system message also known as the instructions\n
+        user_message (dict) : the user message also known as the prompt\n
+
+        Returns:\n
+        output (string) a string that gpt gives to us also known as the translation\n
+
+        '''
+
+        ## max_tokens and logit bias are currently excluded due to a lack of need, and the fact that i am lazy
+
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo-0301",
+            messages=self.messages
+            ,
+
+        )
+
+        ## note, pylance flags this as a 'GeneralTypeIssue', however i see nothing wrong with it, and it works fine
+        output = response['choices'][0]['message']['content'] ## type: ignore
+        
+        return output
+
 ##-------------------start-of-main()---------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
 client = Shabe()
+client.initialize()
 
 messages, usernames = client.get_past_twenty_messages()
 
-client.post_message("I'm just really bored")
+##client.post_message("Dear god")
+
+prompt = "\nPast twenty messages:\n"
 
 for user, message in zip(usernames, messages):
-    print(user + ": " + message + "\n")
+    prompt += user + ": " + message + "\n"
+
+client.build_messages(prompt)
+print(client.get_gpt_response())
